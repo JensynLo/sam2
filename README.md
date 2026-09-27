@@ -1,217 +1,191 @@
-# SAM 2: Segment Anything in Images and Videos
+# SAM 2 图像分割(推理版)
 
-**[AI at Meta, FAIR](https://ai.meta.com/research/)**
+本仓库 fork 自 Meta 的 [SAM 2](https://github.com/facebookresearch/sam2),去掉了训练代码和原 Web demo,只保留推理部分,并提供两个开箱即用的入口:
 
-[Nikhila Ravi](https://nikhilaravi.com/), [Valentin Gabeur](https://gabeur.github.io/), [Yuan-Ting Hu](https://scholar.google.com/citations?user=E8DVVYQAAAAJ&hl=en), [Ronghang Hu](https://ronghanghu.com/), [Chaitanya Ryali](https://scholar.google.com/citations?user=4LWx24UAAAAJ&hl=en), [Tengyu Ma](https://scholar.google.com/citations?user=VeTSl0wAAAAJ&hl=en), [Haitham Khedr](https://hkhedr.com/), [Roman Rädle](https://scholar.google.de/citations?user=Tpt57v0AAAAJ&hl=en), [Chloe Rolland](https://scholar.google.com/citations?hl=fr&user=n-SnMhoAAAAJ), [Laura Gustafson](https://scholar.google.com/citations?user=c8IpF9gAAAAJ&hl=en), [Eric Mintun](https://ericmintun.github.io/), [Junting Pan](https://junting.github.io/), [Kalyan Vasudev Alwala](https://scholar.google.co.in/citations?user=m34oaWEAAAAJ&hl=en), [Nicolas Carion](https://www.nicolascarion.com/), [Chao-Yuan Wu](https://chaoyuan.org/), [Ross Girshick](https://www.rossgirshick.info/), [Piotr Dollár](https://pdollar.github.io/), [Christoph Feichtenhofer](https://feichtenhofer.github.io/)
-
-[[`Paper`](https://ai.meta.com/research/publications/sam-2-segment-anything-in-images-and-videos/)] [[`Project`](https://ai.meta.com/sam2)] [[`Demo`](https://sam2.metademolab.com/)] [[`Dataset`](https://ai.meta.com/datasets/segment-anything-video)] [[`Blog`](https://ai.meta.com/blog/segment-anything-2)] [[`BibTeX`](#citing-sam-2)]
+- **`infer.py`**:命令行,输入图片 + 点/框提示,输出分割掩码
+- **`app.py`**:网页服务,拖入图片、点击或画框即可实时预览掩码,并保存到指定路径;可通过 Tailscale 在其他设备上使用
 
 ![SAM 2 architecture](assets/model_diagram.png?raw=true)
 
-**Segment Anything Model 2 (SAM 2)** is a foundation model towards solving promptable visual segmentation in images and videos. We extend SAM to video by considering images as a video with a single frame. The model design is a simple transformer architecture with streaming memory for real-time video processing. We build a model-in-the-loop data engine, which improves model and data via user interaction, to collect [**our SA-V dataset**](https://ai.meta.com/datasets/segment-anything-video), the largest video segmentation dataset to date. SAM 2 trained on our data provides strong performance across a wide range of tasks and visual domains.
+## 重构说明
 
-![SA-V dataset](assets/sa_v_dataset.jpg?raw=true)
+基于上游 [facebookresearch/sam2](https://github.com/facebookresearch/sam2) 的 `2b90b9f`(2024-12,SAM 2.1)。目标是得到一个只做推理、开箱即用的版本:**模型结构和推理计算与上游完全一致,可直接使用官方权重**,改动集中在删除训练相关代码和新增端到端入口。
 
-## Latest updates
+### 删除
 
-**12/11/2024 -- full model compilation for a major VOS speedup and a new `SAM2VideoPredictor` to better handle multi-object tracking**
+| 内容 | 说明 |
+| :--- | :--- |
+| `training/`、`sam2/configs/sam2.1_training/` | 训练 / 微调代码(Trainer、数据集、损失、优化器)和训练配置 |
+| `demo/`、`backend.Dockerfile`、`docker-compose.yaml` | 原视频标注 demo(React 前端 + GraphQL 后端),由 `app.py` 取代 |
+| `sam2/modeling/sam2_utils.py` 中的 `sample_box_points`、`get_next_point` 等 | 只在训练时用于模拟用户点击 |
+| Hiera 骨干网络的 `weights_path` 参数及 `iopath` 依赖 | 只在训练时加载 ImageNet 预训练权重 |
+| `setup.py` 中的 `interactive-demo` 依赖和 `dev` 里的训练依赖 | fvcore、tensorboard、submitit、pycocotools 等 |
 
-- We now support `torch.compile` of the entire SAM 2 model on videos, which can be turned on by setting `vos_optimized=True` in `build_sam2_video_predictor`, leading to a major speedup for VOS inference.
-- We update the implementation of `SAM2VideoPredictor` to support independent per-object inference, allowing us to relax the assumption of prompting for multi-object tracking and adding new objects after tracking starts.
-- See [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for full details.
+### 修改
 
-**09/30/2024 -- SAM 2.1 Developer Suite (new checkpoints, training code, web demo) is released**
+- **`sam2/build_sam.py`**:模型直接在目标设备(GPU)上构建,权重以 mmap 方式读取,不再先在 CPU 上建一份模型、再把整个权重文件读进内存。以 large 模型为例,加载后进程内存 1.89 GB → 1.20 GB,启动峰值 2.76 GB → 2.03 GB;推理结果与修改前逐像素一致。
+- **`setup.py`**:新增 `web` 可选依赖(Flask);`dev` 只保留格式化工具。
+- **CI 格式检查**(`.github/workflows/check_fmt.yml`)覆盖新增的 `infer.py`、`app.py`。
 
-- A new suite of improved model checkpoints (denoted as **SAM 2.1**) are released. See [Model Description](#model-description) for details.
-  * To use the new SAM 2.1 checkpoints, you need the latest model code from this repo. If you have installed an earlier version of this repo, please first uninstall the previous version via `pip uninstall SAM-2`, pull the latest code from this repo (with `git pull`), and then reinstall the repo following [Installation](#installation) below.
-- The training (and fine-tuning) code has been released. See [`training/README.md`](training/README.md) on how to get started.
-- The frontend + backend code for the SAM 2 web demo has been released. See [`demo/README.md`](demo/README.md) for details.
+### 新增
 
-## Installation
+| 文件 | 说明 |
+| :--- | :--- |
+| `infer.py` | 命令行推理;同时提供 `Segmenter`、`load_image`、`render` 等公共逻辑,供 `app.py` 和其他代码复用 |
+| `app.py` | 网页服务后端(Flask) |
+| `web/index.html` | 网页前端(单文件,无需构建) |
 
-SAM 2 needs to be installed first before use. The code requires `python>=3.10`, as well as `torch>=2.5.1` and `torchvision>=0.20.1`. Please follow the instructions [here](https://pytorch.org/get-started/locally/) to install both PyTorch and TorchVision dependencies. You can install SAM 2 on a GPU machine using:
+几点设计:
+
+- **只用 GPU**:默认设备为 `cuda`,CUDA 不可用时直接报错,不会悄悄退回 CPU;确实要用 CPU 需显式传 `--device cpu`。
+- **每张图片只编码一次**:上传时计算图像特征,之后每次改动点/框只运行轻量的提示编码器和掩码解码器,交互几乎是实时的;服务端缓存最近 8 张图片。
+- **预览与保存一致**:每次预测带版本号,服务端只保留最新版本的结果;保存 / 导出时校验版本,当前提示的预测未完成或失败时不允许保存,避免把旧结果当成新结果保存。连续上传时,晚到的旧图片不会覆盖新选择的图片。
+- **严格的参数校验**:非法的点、框、标签或请求体返回 400,而不是 500 或被静默截断。
+- **可部署在反向代理后**:前端使用相对路径,可以挂在 `tailscale serve --set-path /sam2` 等子路径下。
+
+### 保留
+
+`sam2/` 包的其余部分(图像 / 视频预测器、自动掩码生成、模型配置)、`notebooks/` 示例、`tools/vos_inference.py`、`sav_dataset/` 评测工具保持不变,视频分割等上游功能仍可按原方式使用。`RELEASE_NOTES.md` 是上游的历史记录,其中指向 `training/`、`demo/` 的链接已失效。
+
+## 安装
+
+需要 `python>=3.10`、`torch>=2.5.1`、`torchvision>=0.20.1`。建议使用独立的 conda 环境;如果已有装好 CUDA 版 PyTorch 的环境,可以直接克隆,免去重新下载 PyTorch:
 
 ```bash
-git clone https://github.com/facebookresearch/sam2.git && cd sam2
-
-pip install -e .
+conda create -n sam2 --clone <已有的 PyTorch 环境>   # 或新建环境后按 https://pytorch.org 安装 PyTorch
+conda activate sam2
+SAM2_BUILD_CUDA=0 pip install --no-build-isolation -e ".[web]"
 ```
-If you are installing on Windows, it's strongly recommended to use [Windows Subsystem for Linux (WSL)](https://learn.microsoft.com/en-us/windows/wsl/install) with Ubuntu.
 
-To use the SAM 2 predictor and run the example notebooks, `jupyter` and `matplotlib` are required and can be installed by:
+- `--no-build-isolation` 让安装直接使用环境里已有的 PyTorch,否则 pip 会为了构建再下载一份。
+- `SAM2_BUILD_CUDA=0` 跳过可选的 CUDA 扩展(用于掩码补洞后处理,对结果影响很小)。如果装有与 PyTorch 版本匹配的 `nvcc`,可以去掉它来编译该扩展;编译失败会被忽略,不影响使用。常见问题见 [`INSTALL.md`](./INSTALL.md)。
+- RTX 50 系列(Blackwell)显卡需要 CUDA 12.8 及以上版本的 PyTorch(如 `torch 2.7+` 的 `cu128` 版本)。
 
-```bash
-pip install -e ".[notebooks]"
-```
+## 下载权重
 
-Note:
-1. It's recommended to create a new Python environment via [Anaconda](https://www.anaconda.com/) for this installation and install PyTorch 2.5.1 (or higher) via `pip` following https://pytorch.org/. If you have a PyTorch version lower than 2.5.1 in your current environment, the installation command above will try to upgrade it to the latest PyTorch version using `pip`.
-2. The step above requires compiling a custom CUDA kernel with the `nvcc` compiler. If it isn't already available on your machine, please install the [CUDA toolkits](https://developer.nvidia.com/cuda-toolkit-archive) with a version that matches your PyTorch CUDA version.
-3. If you see a message like `Failed to build the SAM 2 CUDA extension` during installation, you can ignore it and still use SAM 2 (some post-processing functionality may be limited, but it doesn't affect the results in most cases).
-
-Please see [`INSTALL.md`](./INSTALL.md) for FAQs on potential issues and solutions.
-
-## Getting Started
-
-### Download Checkpoints
-
-First, we need to download a model checkpoint. All the model checkpoints can be downloaded by running:
+至少下载一个 SAM 2.1 权重到 `checkpoints/`。`infer.py` 和 `app.py` 默认使用其中精度最高的那个,也可以用 `--model` 指定。
 
 ```bash
-cd checkpoints && \
-./download_ckpts.sh && \
+cd checkpoints
+wget https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt  # 推荐
+# 或者一次下载全部 4 个:./download_ckpts.sh
 cd ..
 ```
 
-or individually from:
+| `--model`   | 权重文件 | 参数量 (M) | 速度 (FPS) | SA-V test (J&F) |
+| :---------- | :------- | :--------: | :--------: | :-------------: |
+| `large`     | [sam2.1_hiera_large.pt](https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt) | 224.4 | 39.5 | 79.5 |
+| `base_plus` | [sam2.1_hiera_base_plus.pt](https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_base_plus.pt) | 80.8 | 64.1 | 78.2 |
+| `small`     | [sam2.1_hiera_small.pt](https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_small.pt) | 46 | 84.8 | 76.6 |
+| `tiny`      | [sam2.1_hiera_tiny.pt](https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_tiny.pt) | 38.9 | 91.2 | 76.5 |
 
-- [sam2.1_hiera_tiny.pt](https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_tiny.pt)
-- [sam2.1_hiera_small.pt](https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_small.pt)
-- [sam2.1_hiera_base_plus.pt](https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_base_plus.pt)
-- [sam2.1_hiera_large.pt](https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt)
+速度在 A100 上测得(`torch 2.5.1, cuda 12.4`)。
 
-(note that these are the improved checkpoints denoted as SAM 2.1; see [Model Description](#model-description) for details.)
+## 命令行:`infer.py`
 
-Then SAM 2 can be used in a few lines as follows for image and video prediction.
+```bash
+# 一个前景点
+python infer.py notebooks/images/truck.jpg --point 500,375
 
-### Image prediction
+# 前景点 + 背景点(第三个数是标签:1 前景,0 背景,默认 1)
+python infer.py notebooks/images/truck.jpg --point 500,375 --point 1125,625,0
 
-SAM 2 has all the capabilities of [SAM](https://github.com/facebookresearch/segment-anything) on static images, and we provide image prediction APIs that closely resemble SAM for image use cases. The `SAM2ImagePredictor` class has an easy interface for image prompting.
-
-```python
-import torch
-from sam2.build_sam import build_sam2
-from sam2.sam2_image_predictor import SAM2ImagePredictor
-
-checkpoint = "./checkpoints/sam2.1_hiera_large.pt"
-model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
-predictor = SAM2ImagePredictor(build_sam2(model_cfg, checkpoint))
-
-with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
-    predictor.set_image(<your_image>)
-    masks, _, _ = predictor.predict(<input_prompts>)
+# 框,也可以再加点修正
+python infer.py notebooks/images/truck.jpg --box 425,600,700,875 --point 575,750,0
 ```
 
-Please refer to the examples in [image_predictor_example.ipynb](./notebooks/image_predictor_example.ipynb) (also in Colab [here](https://colab.research.google.com/github/facebookresearch/sam2/blob/main/notebooks/image_predictor_example.ipynb)) for static image use cases.
+坐标都是原图像素坐标 `(x, y)`,原点在左上角。结果默认保存到 `outputs/`:
 
-SAM 2 also supports automatic mask generation on images just like SAM. Please see [automatic_mask_generator_example.ipynb](./notebooks/automatic_mask_generator_example.ipynb) (also in Colab [here](https://colab.research.google.com/github/facebookresearch/sam2/blob/main/notebooks/automatic_mask_generator_example.ipynb)) for automatic mask generation in images.
+| `--save` 取值 | 输出文件 | 内容 |
+| :------------ | :------- | :--- |
+| `mask`        | `<图片名>_mask.png`    | 黑白掩码(前景 255,背景 0) |
+| `overlay`     | `<图片名>_overlay.png` | 原图叠加半透明蓝色掩码 |
+| `cutout`      | `<图片名>_cutout.png`  | 抠图,掩码外透明(RGBA) |
 
-### Video prediction
+其他参数:`--output DIR` 输出目录,`--save mask,overlay,cutout` 选择输出(默认 `mask,overlay`),`--model` / `--checkpoint` 选择模型,`--device` 选择设备(默认 `cuda`;CUDA 不可用时直接报错,不会自动退回 CPU,确实要用 CPU 请显式传 `--device cpu`)。完整说明见 `python infer.py -h`。
 
-For promptable segmentation and tracking in videos, we provide a video predictor with APIs for example to add prompts and propagate masklets throughout a video. SAM 2 supports video inference on multiple objects and uses an inference state to keep track of the interactions in each video.
+只给一个点时提示有歧义(比如点在车窗上,可能指车窗也可能指整辆车),程序会让模型输出 3 个候选,再选质量分最高的一个。结果不理想时,可以加背景点排除多余区域,或者直接用框。
 
-```python
-import torch
-from sam2.build_sam import build_sam2_video_predictor
+## 网页服务:`app.py`
 
-checkpoint = "./checkpoints/sam2.1_hiera_large.pt"
-model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
-predictor = build_sam2_video_predictor(model_cfg, checkpoint)
-
-with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
-    state = predictor.init_state(<your_video>)
-
-    # add new prompts and instantly get the output on the same frame
-    frame_idx, object_ids, masks = predictor.add_new_points_or_box(state, <your_prompts>):
-
-    # propagate the prompts to get masklets throughout the video
-    for frame_idx, object_ids, masks in predictor.propagate_in_video(state):
-        ...
+```bash
+python app.py        # 然后在浏览器打开 http://127.0.0.1:7860
 ```
 
-Please refer to the examples in [video_predictor_example.ipynb](./notebooks/video_predictor_example.ipynb) (also in Colab [here](https://colab.research.google.com/github/facebookresearch/sam2/blob/main/notebooks/video_predictor_example.ipynb)) for details on how to add click or box prompts, make refinements, and track multiple objects in videos.
+1. 把图片拖进页面(也可以点击选择,或 Ctrl+V 粘贴)
+2. **左键**点击添加前景点,**右键**(或 Shift+左键)添加背景点,**按住拖动**画框;每次修改后都会重新分割并显示结果
+3. `Ctrl+Z` 撤销,`Esc` 清空
+4. 选择保存类型(掩码 / 叠加图 / 抠图),然后:
+   - **保存到该路径**:保存到运行 `app.py` 的机器上。路径可以是文件,也可以是目录(以 `/` 结尾或已存在的目录,文件名自动生成);相对路径以 `--output-dir`(默认 `outputs/`)为基准。目标文件已存在时会先询问是否覆盖。
+   - **另存为…**:下载到浏览器所在的机器。Chrome / Edge 会弹出系统对话框让你选择保存位置,其他浏览器保存到默认下载目录。
 
-## Load from 🤗 Hugging Face
+参数:`--host`(默认 `127.0.0.1`,`tailscale` 表示只监听 Tailscale 地址)、`--port`(默认 `7860`)、`--output-dir`,以及和 `infer.py` 相同的 `--model` / `--checkpoint` / `--device`。
 
-Alternatively, models can also be loaded from [Hugging Face](https://huggingface.co/models?search=facebook/sam2) (requires `pip install huggingface_hub`).
+> 网页可以把文件写到服务器的任意路径,默认只监听本机。如果用 `--host 0.0.0.0` 对外开放,请只在可信网络中使用。
 
-For image prediction:
+### 通过 Tailscale 在其他设备上访问
 
-```python
-import torch
-from sam2.sam2_image_predictor import SAM2ImagePredictor
+**方式一:直接监听 tailnet 地址**(最简单)
 
-predictor = SAM2ImagePredictor.from_pretrained("facebook/sam2-hiera-large")
-
-with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
-    predictor.set_image(<your_image>)
-    masks, _, _ = predictor.predict(<input_prompts>)
+```bash
+python app.py --host tailscale
 ```
 
-For video prediction:
+`--host tailscale` 会自动取本机的 Tailscale IP 并只监听该地址:tailnet 内的设备可以访问,局域网和其他网络访问不到。启动时会打印访问地址,例如 `tailnet URL: http://jensynpc.<tailnet>.ts.net:7860`,在 MacBook 等设备上打开即可。
 
-```python
-import torch
-from sam2.sam2_video_predictor import SAM2VideoPredictor
+**方式二:`tailscale serve` 反向代理**(HTTPS)
 
-predictor = SAM2VideoPredictor.from_pretrained("facebook/sam2-hiera-large")
+`app.py` 保持默认只监听本机,由 Tailscale 转发并提供 HTTPS 证书:
 
-with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
-    state = predictor.init_state(<your_video>)
-
-    # add new prompts and instantly get the output on the same frame
-    frame_idx, object_ids, masks = predictor.add_new_points_or_box(state, <your_prompts>):
-
-    # propagate the prompts to get masklets throughout the video
-    for frame_idx, object_ids, masks in predictor.propagate_in_video(state):
-        ...
+```bash
+python app.py                                   # 监听 127.0.0.1:7860
+tailscale serve --bg 7860                       # https://<机器名>.<tailnet>.ts.net/
+# 或挂在子路径下,与其他服务共用一个域名:
+tailscale serve --bg --set-path /sam2 7860      # https://<机器名>.<tailnet>.ts.net/sam2
+tailscale serve status                          # 查看当前转发
+tailscale serve reset                           # 取消所有转发
 ```
 
-## Model Description
+HTTPS 下,Chrome / Edge 的「另存为…」可以弹出系统对话框选择保存位置;通过普通 `http://` 远程访问时,浏览器出于安全限制不提供该对话框,文件会存到默认下载目录。
 
-### SAM 2.1 checkpoints
+注意:
 
-The table below shows the improved SAM 2.1 checkpoints released on September 29, 2024.
-|      **Model**       | **Size (M)** |    **Speed (FPS)**     | **SA-V test (J&F)** | **MOSE val (J&F)** | **LVOS v2 (J&F)** |
-| :------------------: | :----------: | :--------------------: | :-----------------: | :----------------: | :---------------: |
-|   sam2.1_hiera_tiny <br /> ([config](sam2/configs/sam2.1/sam2.1_hiera_t.yaml), [checkpoint](https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_tiny.pt))    |     38.9     |          91.2          |        76.5         |        71.8        |       77.3        |
-|   sam2.1_hiera_small <br /> ([config](sam2/configs/sam2.1/sam2.1_hiera_s.yaml), [checkpoint](https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_small.pt))   |      46      |          84.8          |        76.6         |        73.5        |       78.3        |
-| sam2.1_hiera_base_plus <br /> ([config](sam2/configs/sam2.1/sam2.1_hiera_b+.yaml), [checkpoint](https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_base_plus.pt)) |     80.8     |        64.1          |        78.2         |        73.7        |       78.2        |
-|   sam2.1_hiera_large <br /> ([config](sam2/configs/sam2.1/sam2.1_hiera_l.yaml), [checkpoint](https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt))   |    224.4     |          39.5          |        79.5         |        74.6        |       80.6        |
+- **「保存到该路径」写入的是运行 `app.py` 的机器**,「另存为…」才是下载到你正在用的设备上。
+- 如果客户端开着 Clash 等代理,请把 `100.64.0.0/10` 和 `*.ts.net` 加入直连 / 绕过列表,否则请求会被发给代理而无法访问。
+- 不要用 `tailscale funnel` 把它公开到互联网,网页可以在服务器上写文件。
 
-### SAM 2 checkpoints
+## 在代码中调用
 
-The previous SAM 2 checkpoints released on July 29, 2024 can be found as follows:
+```python
+from infer import load_image, render, Segmenter
 
-|      **Model**       | **Size (M)** |    **Speed (FPS)**     | **SA-V test (J&F)** | **MOSE val (J&F)** | **LVOS v2 (J&F)** |
-| :------------------: | :----------: | :--------------------: | :-----------------: | :----------------: | :---------------: |
-|   sam2_hiera_tiny <br /> ([config](sam2/configs/sam2/sam2_hiera_t.yaml), [checkpoint](https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_tiny.pt))   |     38.9     |          91.5          |        75.0         |        70.9        |       75.3        |
-|   sam2_hiera_small <br /> ([config](sam2/configs/sam2/sam2_hiera_s.yaml), [checkpoint](https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_small.pt))   |      46      |          85.6          |        74.9         |        71.5        |       76.4        |
-| sam2_hiera_base_plus <br /> ([config](sam2/configs/sam2/sam2_hiera_b+.yaml), [checkpoint](https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_base_plus.pt)) |     80.8     |     64.8    |        74.7         |        72.8        |       75.8        |
-|   sam2_hiera_large <br /> ([config](sam2/configs/sam2/sam2_hiera_l.yaml), [checkpoint](https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_large.pt))   |    224.4     | 39.7 |        76.0         |        74.6        |       79.8        |
+segmenter = Segmenter()                   # 可选参数:model="large", device="cuda"
+image = load_image("notebooks/images/truck.jpg")
+segmenter.set_image(image)                # 每张图片只需计算一次特征
+mask, score = segmenter.predict(points=[(500, 375, 1)], box=None)
+render(image, mask, "cutout").save("truck_cutout.png")
+```
 
-Speed measured on an A100 with `torch 2.5.1, cuda 12.4`. See `benchmark.py` for an example on benchmarking (compiling all the model components). Compiling only the image encoder can be more flexible and also provide (a smaller) speed-up (set `compile_image_encoder: True` in the config).
-## Segment Anything Video Dataset
+更底层的接口(`SAM2ImagePredictor`、`SAM2AutomaticMaskGenerator`、视频用的 `SAM2VideoPredictor`)见 `sam2/` 包和 [`notebooks/`](./notebooks) 中的示例。
 
-See [sav_dataset/README.md](sav_dataset/README.md) for details.
+## 目录结构
 
-## Training SAM 2
-
-You can train or fine-tune SAM 2 on custom datasets of images, videos, or both. Please check the training [README](training/README.md) on how to get started.
-
-## Web demo for SAM 2
-
-We have released the frontend + backend code for the SAM 2 web demo (a locally deployable version similar to https://sam2.metademolab.com/demo). Please see the web demo [README](demo/README.md) for details.
+```
+infer.py             命令行推理 + 公共的分割/渲染逻辑
+app.py               网页服务(Flask)
+web/index.html       网页前端
+sam2/                SAM 2 模型与预测器
+checkpoints/         权重(下载脚本 download_ckpts.sh)
+notebooks/           官方示例 notebook
+tools/               视频目标分割(VOS)批量推理脚本
+sav_dataset/         SA-V 数据集说明与评测工具
+```
 
 ## License
 
-The SAM 2 model checkpoints, SAM 2 demo code (front-end and back-end), and SAM 2 training code are licensed under [Apache 2.0](./LICENSE), however the [Inter Font](https://github.com/rsms/inter?tab=OFL-1.1-1-ov-file) and [Noto Color Emoji](https://github.com/googlefonts/noto-emoji) used in the SAM 2 demo code are made available under the [SIL Open Font License, version 1.1](https://openfontlicense.org/open-font-license-official-text/).
+SAM 2 的模型权重和代码基于 [Apache 2.0](./LICENSE) 许可。GPU 连通域算法改编自 [`cc_torch`](https://github.com/zsef123/Connected_components_PyTorch)(许可见 [`LICENSE_cctorch`](./LICENSE_cctorch))。
 
-## Contributing
-
-See [contributing](CONTRIBUTING.md) and the [code of conduct](CODE_OF_CONDUCT.md).
-
-## Contributors
-
-The SAM 2 project was made possible with the help of many contributors (alphabetical):
-
-Karen Bergan, Daniel Bolya, Alex Bosenberg, Kai Brown, Vispi Cassod, Christopher Chedeau, Ida Cheng, Luc Dahlin, Shoubhik Debnath, Rene Martinez Doehner, Grant Gardner, Sahir Gomez, Rishi Godugu, Baishan Guo, Caleb Ho, Andrew Huang, Somya Jain, Bob Kamma, Amanda Kallet, Jake Kinney, Alexander Kirillov, Shiva Koduvayur, Devansh Kukreja, Robert Kuo, Aohan Lin, Parth Malani, Jitendra Malik, Mallika Malhotra, Miguel Martin, Alexander Miller, Sasha Mitts, William Ngan, George Orlin, Joelle Pineau, Kate Saenko, Rodrick Shepard, Azita Shokrpour, David Soofian, Jonathan Torres, Jenny Truong, Sagar Vaze, Meng Wang, Claudette Ward, Pengchuan Zhang.
-
-Third-party code: we use a GPU-based connected component algorithm adapted from [`cc_torch`](https://github.com/zsef123/Connected_components_PyTorch) (with its license in [`LICENSE_cctorch`](./LICENSE_cctorch)) as an optional post-processing step for the mask predictions.
-
-## Citing SAM 2
-
-If you use SAM 2 or the SA-V dataset in your research, please use the following BibTeX entry.
+## 引用 SAM 2
 
 ```bibtex
 @article{ravi2024sam2,
