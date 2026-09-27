@@ -1,0 +1,12 @@
+# Only setup files, sam2/, infer.py, app.py and web/ are needed in the image.
+.git
+.github
+**/__pycache__
+**/*.egg-info
+build
+checkpoints
+outputs
+notebooks
+sav_dataset
+tools
+assets

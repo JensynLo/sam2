@@ -1,0 +1,25 @@
+services:
+  sam2:
+    build: .
+    image: sam2-web
+    # Arguments after the image's entrypoint, e.g. pick a model explicitly:
+    # command: ["--model", "large"]
+    ports:
+      # host address:port -> container port. The default only listens on this machine.
+      # To serve the tailnet directly, use the Tailscale IP, e.g. "100.x.y.z:7860:7860",
+      # or keep 127.0.0.1 and run `tailscale serve --bg 7860` on the host.
+      - "${SAM2_BIND:-127.0.0.1}:${SAM2_PORT:-7860}:7860"
+    volumes:
+      - ./checkpoints:/app/checkpoints:ro
+      # "保存到该路径" writes inside the container: only this directory reaches the host
+      - ./outputs:/app/outputs
+    # write output files as the host user instead of root
+    user: "${UID:-1000}:${GID:-1000}"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped

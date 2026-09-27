@@ -16,7 +16,7 @@
 | 内容 | 说明 |
 | :--- | :--- |
 | `training/`、`sam2/configs/sam2.1_training/` | 训练 / 微调代码(Trainer、数据集、损失、优化器)和训练配置 |
-| `demo/`、`backend.Dockerfile`、`docker-compose.yaml` | 原视频标注 demo(React 前端 + GraphQL 后端),由 `app.py` 取代 |
+| `demo/`、`backend.Dockerfile`、原 `docker-compose.yaml` | 原视频标注 demo(React 前端 + GraphQL 后端)及其 Docker 配置,由 `app.py` 和新的 `Dockerfile` 取代 |
 | `sam2/modeling/sam2_utils.py` 中的 `sample_box_points`、`get_next_point` 等 | 只在训练时用于模拟用户点击 |
 | Hiera 骨干网络的 `weights_path` 参数及 `iopath` 依赖 | 只在训练时加载 ImageNet 预训练权重 |
 | `setup.py` 中的 `interactive-demo` 依赖和 `dev` 里的训练依赖 | fvcore、tensorboard、submitit、pycocotools 等 |
@@ -34,6 +34,7 @@
 | `infer.py` | 命令行推理;同时提供 `Segmenter`、`load_image`、`render` 等公共逻辑,供 `app.py` 和其他代码复用 |
 | `app.py` | 网页服务后端(Flask) |
 | `web/index.html` | 网页前端(单文件,无需构建) |
+| `Dockerfile`、`docker-compose.yaml` | 网页服务的 GPU 容器(替代上游 demo 的 Docker 配置) |
 
 几点设计:
 
@@ -154,6 +155,50 @@ HTTPS 下,Chrome / Edge 的「另存为…」可以弹出系统对话框选择�
 - 如果客户端开着 Clash 等代理,请把 `100.64.0.0/10` 和 `*.ts.net` 加入直连 / 绕过列表,否则请求会被发给代理而无法访问。
 - 不要用 `tailscale funnel` 把它公开到互联网,网页可以在服务器上写文件。
 
+## Docker
+
+镜像基于 `pytorch/pytorch:2.11.0-cuda12.8-cudnn9-runtime`,只包含网页服务;权重不打进镜像,运行时挂载。
+
+**前提**:安装 Docker 和 NVIDIA Container Toolkit,让容器能使用 GPU。
+
+- Windows + WSL2:安装 [Docker Desktop](https://docs.docker.com/desktop/features/wsl/) 并在设置中为该 WSL 发行版开启 WSL integration,GPU 支持开箱即用。
+- Linux(或在 WSL 内直接安装 Docker Engine):安装 [Docker Engine](https://docs.docker.com/engine/install/ubuntu/) 和 [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html),然后执行 `sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker`。
+
+可以用 `docker run --rm --gpus all nvidia/cuda:12.8.0-base-ubuntu22.04 nvidia-smi` 检查容器能否看到 GPU。
+
+**启动**
+
+```bash
+mkdir -p outputs                                   # 先建好,否则 Docker 会以 root 身份创建,容器内无法写入
+docker compose up -d --build                       # 构建并在后台启动,打开 http://127.0.0.1:7860
+docker compose logs -f                             # 查看日志(加载模型约需几十秒)
+docker compose down                                # 停止
+```
+
+通过环境变量调整监听地址和端口:
+
+```bash
+SAM2_BIND=100.79.92.107 docker compose up -d       # 只监听本机的 Tailscale IP(换成 `tailscale ip -4` 的输出)
+SAM2_PORT=8080 docker compose up -d                # 换端口
+```
+
+也可以保持默认的 `127.0.0.1`,在宿主机上用 `tailscale serve --bg 7860` 转发(见上一节)。要指定模型,在 `docker-compose.yaml` 中设置 `command: ["--model", "large"]`。
+
+不使用 compose 时:
+
+```bash
+docker build -t sam2-web .
+docker run -d --name sam2 --gpus all -p 127.0.0.1:7860:7860 \
+  -v "$PWD/checkpoints:/app/checkpoints:ro" -v "$PWD/outputs:/app/outputs" \
+  --user "$(id -u):$(id -g)" sam2-web
+```
+
+注意:
+
+- 容器内**只有 `/app/outputs` 映射到宿主机的 `outputs/`**。在网页上「保存到该路径」时请保存到 `/app/outputs` 下(默认路径就是这里),写到容器内其他位置的文件会随容器删除而丢失。「另存为…」下载到浏览器所在设备,不受影响。
+- 容器内没有 GPU 时服务会直接报错退出,不会退回 CPU。
+- 如果拉取镜像或安装依赖需要代理,可在 Docker Desktop 的设置中配置代理,或构建时传入 `--build-arg HTTP_PROXY=... --build-arg HTTPS_PROXY=...`。
+
 ## 在代码中调用
 
 ```python
@@ -174,6 +219,7 @@ render(image, mask, "cutout").save("truck_cutout.png")
 infer.py             命令行推理 + 公共的分割/渲染逻辑
 app.py               网页服务(Flask)
 web/index.html       网页前端
+Dockerfile           网页服务镜像(docker-compose.yaml 为启动配置)
 sam2/                SAM 2 模型与预测器
 checkpoints/         权重(下载脚本 download_ckpts.sh)
 notebooks/           官方示例 notebook
