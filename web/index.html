@@ -1,0 +1,481 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SAM 2 分割</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --panel: #ffffff; --text: #1d2129; --muted: #6b7280;
+    --border: #dde1e6; --accent: #1e90ff; --accent-text: #ffffff;
+    --pos: #22c55e; --neg: #ef4444; --stage: #e9ebef; --danger: #dc2626; --ok: #16a34a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15171b; --panel: #1e2126; --text: #e6e8eb; --muted: #9aa1ab;
+      --border: #30343b; --stage: #101215; --danger: #f87171; --ok: #4ade80;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    display: flex; flex-direction: column;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 12px; padding: 10px 16px;
+    border-bottom: 1px solid var(--border); background: var(--panel);
+  }
+  header h1 { font-size: 16px; margin: 0; }
+  header .meta { color: var(--muted); font-size: 12px; }
+  main { flex: 1; display: flex; min-height: 0; }
+  #stage {
+    flex: 1; position: relative; background: var(--stage); min-width: 0;
+    display: flex; align-items: center; justify-content: center; overflow: hidden;
+  }
+  #canvas { display: none; cursor: crosshair; touch-action: none; }
+  #dropzone {
+    margin: 24px; padding: 48px 32px; max-width: 480px; text-align: center;
+    border: 2px dashed var(--border); border-radius: 12px; color: var(--muted); cursor: pointer;
+  }
+  #dropzone strong { display: block; color: var(--text); font-size: 16px; margin-bottom: 6px; }
+  #drag-overlay {
+    position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    border: 3px dashed var(--accent); font-size: 18px; font-weight: 600; pointer-events: none;
+  }
+  body.dragging #drag-overlay { display: flex; }
+  #busy {
+    position: absolute; top: 12px; left: 50%; transform: translateX(-50%); display: none;
+    padding: 4px 12px; border-radius: 999px; background: var(--panel); border: 1px solid var(--border);
+    font-size: 12px; color: var(--muted);
+  }
+  aside {
+    width: 320px; flex-shrink: 0; background: var(--panel); border-left: 1px solid var(--border);
+    padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 18px;
+  }
+  section h2 { font-size: 13px; margin: 0 0 8px; color: var(--muted); font-weight: 600; }
+  .help { margin: 0; padding-left: 18px; color: var(--muted); }
+  .help b { color: var(--text); font-weight: 600; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; vertical-align: 0; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  button {
+    font: inherit; padding: 6px 12px; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--panel); color: var(--text);
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .stats { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; }
+  .stats dt { color: var(--muted); }
+  .stats dd { margin: 0; font-variant-numeric: tabular-nums; }
+  .kinds { display: flex; gap: 14px; margin-bottom: 10px; }
+  .kinds label { cursor: pointer; }
+  input[type=text] {
+    width: 100%; font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; padding: 7px 8px;
+    border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);
+    margin-bottom: 8px;
+  }
+  #status { min-height: 1.5em; font-size: 12px; word-break: break-all; margin-top: 8px; }
+  #status.error { color: var(--danger); }
+  #status.ok { color: var(--ok); }
+  @media (max-width: 760px) {
+    main { flex-direction: column; }
+    #stage { min-height: 55vh; }
+    aside { width: auto; border-left: 0; border-top: 1px solid var(--border); }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>SAM 2 分割</h1>
+  <span class="meta" id="model-info">加载中…</span>
+</header>
+<main>
+  <div id="stage">
+    <div id="dropzone">
+      <strong>拖入图片,或点击选择</strong>
+      也可以直接粘贴(Ctrl+V)剪贴板里的图片
+    </div>
+    <canvas id="canvas"></canvas>
+    <div id="busy"></div>
+    <div id="drag-overlay">松开以载入图片</div>
+    <input type="file" id="file-input" accept="image/*" hidden>
+  </div>
+  <aside>
+    <section>
+      <h2>操作</h2>
+      <ul class="help">
+        <li><b>左键点击</b> 添加前景点 <span class="dot" style="background:var(--pos)"></span></li>
+        <li><b>右键 / Shift+点击</b> 添加背景点 <span class="dot" style="background:var(--neg)"></span></li>
+        <li><b>按住拖动</b> 画框(再画会替换)</li>
+        <li><b>Ctrl+Z</b> 撤销,<b>Esc</b> 清空</li>
+      </ul>
+    </section>
+    <section>
+      <div class="row">
+        <button id="undo-btn" disabled>撤销</button>
+        <button id="clear-btn" disabled>清空</button>
+        <button id="open-btn">换一张图</button>
+      </div>
+    </section>
+    <section>
+      <h2>结果</h2>
+      <dl class="stats">
+        <dt>图片</dt><dd id="stat-image">—</dd>
+        <dt>提示</dt><dd id="stat-prompts">—</dd>
+        <dt>质量分</dt><dd id="stat-score">—</dd>
+        <dt>面积占比</dt><dd id="stat-area">—</dd>
+      </dl>
+    </section>
+    <section>
+      <h2>保存</h2>
+      <div class="kinds">
+        <label><input type="radio" name="kind" value="mask" checked> 掩码</label>
+        <label><input type="radio" name="kind" value="overlay"> 叠加图</label>
+        <label><input type="radio" name="kind" value="cutout"> 抠图</label>
+      </div>
+      <input type="text" id="save-path" spellcheck="false" placeholder="保存路径(服务器上的文件或目录)">
+      <div class="row">
+        <button class="primary" id="save-btn" disabled>保存到该路径</button>
+        <button id="download-btn" disabled>另存为…</button>
+      </div>
+      <div id="status"></div>
+    </section>
+  </aside>
+</main>
+<script>
+// API paths are relative so the page also works behind a reverse proxy under a
+// sub-path (e.g. `tailscale serve --set-path /sam2`); that needs a trailing slash.
+if (!location.pathname.endsWith("/")) location.replace(location.pathname + "/" + location.search);
+const $ = (id) => document.getElementById(id);
+const canvas = $("canvas"), ctx = canvas.getContext("2d");
+const DRAG_THRESHOLD = 5;  // display pixels before a press becomes a box drag
+
+const state = {
+  info: null,
+  image: null,        // {id, name, width, height, el}
+  points: [],         // [x, y, label] in image pixels
+  box: null,          // [x0, y0, x1, y1] in image pixels
+  history: [],        // snapshots of {points, box} for undo
+  mask: null,         // ImageBitmap of the colored mask layer
+  maskSeq: null,      // prediction number of `mask`; it's savable only when it equals `seq`
+  score: null, area: null,
+  seq: 0,             // latest prediction request number (also the server-side result version)
+  pending: 0,
+  uploadSeq: 0,       // latest upload number
+  uploading: false,
+  drag: null,         // {x, y, sx, sy, moved} while the pointer is down
+  savePathEdited: false,
+};
+let view = { scale: 1, dpr: 1 };  // image -> canvas CSS pixel scale
+
+// ---------- helpers ----------
+async function api(path, options = {}) {
+  const res = await fetch(path, options);
+  if (!res.ok) {
+    let data = {};
+    try { data = await res.json(); } catch {}
+    const err = new Error(data.error || `请求失败 (${res.status})`);
+    err.status = res.status; err.data = data;
+    throw err;
+  }
+  return res;
+}
+function setStatus(text, cls = "") { const s = $("status"); s.textContent = text; s.className = cls; }
+function setBusy(text) { const b = $("busy"); b.textContent = text || ""; b.style.display = text ? "block" : "none"; }
+function kind() { return document.querySelector("input[name=kind]:checked").value; }
+function joinPath(dir, name) { return dir.replace(/[\\/]+$/, "") + "/" + name; }
+function defaultSavePath() {
+  if (!state.info || !state.image) return "";
+  return joinPath(state.info.output_dir, `${state.image.name}_${kind()}.png`);
+}
+
+// ---------- image loading ----------
+async function loadFile(file) {
+  if (!file || !file.type.startsWith("image/")) { setStatus("请选择图片文件", "error"); return; }
+  const upload = ++state.uploadSeq;
+  const superseded = () => upload !== state.uploadSeq;  // a newer image was chosen meanwhile
+  state.uploading = true;
+  setBusy("正在计算图像特征…");
+  setStatus("");
+  try {
+    const form = new FormData();
+    form.append("image", file, file.name || "pasted.png");
+    const meta = await (await api("api/images", { method: "POST", body: form })).json();
+    if (superseded()) return;
+    const el = new Image();
+    el.src = `api/images/${meta.id}`;
+    await el.decode();
+    if (superseded()) return;
+    Object.assign(state, {
+      image: { ...meta, el }, points: [], box: null, history: [], mask: null, maskSeq: null,
+      score: null, area: null, savePathEdited: false,
+    });
+    state.seq++;  // drop in-flight predictions for the previous image
+    $("save-path").value = defaultSavePath();
+    $("dropzone").style.display = "none";
+    canvas.style.display = "block";
+    layout();
+    setStatus("点击图片上的目标开始分割");
+  } catch (e) {
+    if (!superseded()) setStatus(e.message, "error");
+  } finally {
+    if (!superseded()) {
+      state.uploading = false;
+      update();
+    }
+  }
+}
+
+// ---------- prompts & prediction ----------
+function pushHistory() {
+  state.history.push({ points: state.points.map((p) => [...p]), box: state.box && [...state.box] });
+}
+function changePrompts(fn) { pushHistory(); fn(); predict(); }
+function undo() {
+  const prev = state.history.pop();
+  if (!prev) return;
+  state.points = prev.points; state.box = prev.box;
+  predict();
+}
+function clearPrompts() {
+  if (!state.points.length && !state.box) return;
+  changePrompts(() => { state.points = []; state.box = null; });
+}
+
+async function predict() {
+  const seq = ++state.seq;
+  if (!state.points.length && !state.box) {
+    state.mask = state.maskSeq = null; state.score = state.area = null;
+    update();
+    return;
+  }
+  state.pending++;
+  update();
+  try {
+    const res = await api(`api/images/${state.image.id}/predict`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ points: state.points, box: state.box, version: seq }),
+    });
+    const bitmap = await createImageBitmap(await res.blob());
+    if (seq !== state.seq) return;  // a newer request superseded this one
+    state.mask = bitmap;
+    state.maskSeq = seq;
+    state.score = parseFloat(res.headers.get("X-Mask-Score"));
+    state.area = parseFloat(res.headers.get("X-Mask-Area"));
+    setStatus("");
+  } catch (e) {
+    if (seq !== state.seq) return;
+    // the shown mask no longer matches the prompts: drop it instead of letting it be saved
+    state.mask = state.maskSeq = null; state.score = state.area = null;
+    setStatus(`分割失败,结果已失效: ${e.message}`, "error");
+  } finally {
+    state.pending--;
+    update();
+  }
+}
+
+// ---------- drawing ----------
+function layout() {
+  if (!state.image) return;
+  const stage = $("stage");
+  const { width: iw, height: ih } = state.image;
+  const pad = 16;
+  const scale = Math.min((stage.clientWidth - 2 * pad) / iw, (stage.clientHeight - 2 * pad) / ih);
+  const w = Math.max(1, Math.round(iw * scale)), h = Math.max(1, Math.round(ih * scale));
+  const dpr = window.devicePixelRatio || 1;
+  canvas.style.width = w + "px"; canvas.style.height = h + "px";
+  canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+  view = { scale: w / iw, dpr };
+  draw();
+}
+
+function draw() {
+  if (!state.image) return;
+  const { scale, dpr } = view;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const w = state.image.width * scale, h = state.image.height * scale;
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(state.image.el, 0, 0, w, h);
+  if (state.mask) {
+    ctx.globalAlpha = 0.5;
+    ctx.drawImage(state.mask, 0, 0, w, h);
+    ctx.globalAlpha = 1;
+  }
+  const d = state.drag;
+  const box = d && d.moved ? [d.x, d.y, d.cx, d.cy] : state.box;
+  if (box) {
+    const [x0, y0, x1, y1] = box.map((v) => v * scale);
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 4]);
+    ctx.strokeStyle = "#ffffff";
+    ctx.strokeRect(Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0), Math.abs(y1 - y0));
+    ctx.setLineDash([]);
+  }
+  const css = getComputedStyle(document.documentElement);
+  for (const [x, y, label] of state.points) {
+    ctx.beginPath();
+    ctx.arc(x * scale, y * scale, 6, 0, 2 * Math.PI);
+    ctx.fillStyle = css.getPropertyValue(label ? "--pos" : "--neg");
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "#ffffff";
+    ctx.stroke();
+  }
+}
+
+function update() {
+  const has = !!state.image;
+  const hasPrompts = state.points.length > 0 || !!state.box;
+  // savable only if the shown mask is the prediction for the current prompts
+  const ready = has && !!state.mask && state.maskSeq === state.seq;
+  $("undo-btn").disabled = !state.history.length;
+  $("clear-btn").disabled = !hasPrompts;
+  $("save-btn").disabled = !ready;
+  $("download-btn").disabled = !ready;
+  $("stat-image").textContent = has ? `${state.image.name} (${state.image.width}×${state.image.height})` : "—";
+  const pos = state.points.filter((p) => p[2] === 1).length;
+  $("stat-prompts").textContent = has
+    ? `${pos} 前景点, ${state.points.length - pos} 背景点${state.box ? ", 1 个框" : ""}`
+    : "—";
+  $("stat-score").textContent = state.mask && state.score != null ? state.score.toFixed(3) : "—";
+  $("stat-area").textContent = state.mask && state.area != null ? (state.area * 100).toFixed(2) + "%" : "—";
+  setBusy(state.uploading ? "正在计算图像特征…" : state.pending ? "分割中…" : "");
+  draw();
+}
+
+// ---------- pointer interaction ----------
+function toImage(e) {
+  const r = canvas.getBoundingClientRect();
+  const x = (e.clientX - r.left) / view.scale, y = (e.clientY - r.top) / view.scale;
+  return [
+    Math.min(Math.max(x, 0), state.image.width - 1),
+    Math.min(Math.max(y, 0), state.image.height - 1),
+  ];
+}
+canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+canvas.addEventListener("pointerdown", (e) => {
+  if (!state.image || (e.button !== 0 && e.button !== 2)) return;
+  canvas.setPointerCapture(e.pointerId);
+  const [x, y] = toImage(e);
+  state.drag = { x, y, cx: x, cy: y, sx: e.clientX, sy: e.clientY, moved: false,
+                 negative: e.button === 2 || e.shiftKey };
+});
+canvas.addEventListener("pointermove", (e) => {
+  const d = state.drag;
+  if (!d) return;
+  [d.cx, d.cy] = toImage(e);
+  if (!d.moved && Math.hypot(e.clientX - d.sx, e.clientY - d.sy) > DRAG_THRESHOLD) d.moved = true;
+  if (d.moved) draw();
+});
+canvas.addEventListener("pointerup", () => {
+  const d = state.drag;
+  if (!d) return;
+  state.drag = null;
+  if (d.moved) {
+    const box = [Math.min(d.x, d.cx), Math.min(d.y, d.cy), Math.max(d.x, d.cx), Math.max(d.y, d.cy)];
+    changePrompts(() => { state.box = box.map(Math.round); });
+  } else {
+    changePrompts(() => { state.points.push([Math.round(d.x), Math.round(d.y), d.negative ? 0 : 1]); });
+  }
+});
+canvas.addEventListener("pointercancel", () => { state.drag = null; draw(); });
+
+// ---------- saving ----------
+async function saveToPath(overwrite = false) {
+  const path = $("save-path").value.trim();
+  try {
+    const res = await api(`api/images/${state.image.id}/save`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: kind(), path, overwrite, version: state.maskSeq }),
+    });
+    setStatus(`已保存: ${(await res.json()).path}`, "ok");
+  } catch (e) {
+    if (e.status === 409 && e.data.exists) {
+      if (confirm(`文件已存在,是否覆盖?\n${e.data.path}`)) return saveToPath(true);
+      setStatus("已取消保存");
+    } else {
+      setStatus(e.message, "error");
+    }
+  }
+}
+
+async function download() {
+  const name = `${state.image.name}_${kind()}.png`;
+  try {
+    // open the picker first: it must run directly in the click handler
+    let handle = null;
+    if (window.showSaveFilePicker) {
+      handle = await window.showSaveFilePicker({
+        suggestedName: name,
+        types: [{ description: "PNG 图片", accept: { "image/png": [".png"] } }],
+      });
+    }
+    const url = `api/images/${state.image.id}/export/${kind()}?version=${state.maskSeq}`;
+    const blob = await (await api(url)).blob();
+    if (handle) {
+      const writable = await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      setStatus(`已保存: ${handle.name}`, "ok");
+    } else {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      setStatus("已开始下载(浏览器不支持选择路径时会保存到默认下载目录)", "ok");
+    }
+  } catch (e) {
+    if (e.name === "AbortError") return;
+    setStatus(e.message, "error");
+  }
+}
+
+// ---------- wiring ----------
+$("dropzone").addEventListener("click", () => $("file-input").click());
+$("open-btn").addEventListener("click", () => $("file-input").click());
+$("file-input").addEventListener("change", (e) => { loadFile(e.target.files[0]); e.target.value = ""; });
+$("undo-btn").addEventListener("click", undo);
+$("clear-btn").addEventListener("click", clearPrompts);
+$("save-btn").addEventListener("click", () => saveToPath());
+$("download-btn").addEventListener("click", download);
+$("save-path").addEventListener("input", () => { state.savePathEdited = true; });
+document.querySelectorAll("input[name=kind]").forEach((r) =>
+  r.addEventListener("change", () => { if (!state.savePathEdited) $("save-path").value = defaultSavePath(); }));
+
+let dragDepth = 0;
+window.addEventListener("dragenter", (e) => { e.preventDefault(); dragDepth++; document.body.classList.add("dragging"); });
+window.addEventListener("dragleave", () => { if (--dragDepth <= 0) { dragDepth = 0; document.body.classList.remove("dragging"); } });
+window.addEventListener("dragover", (e) => e.preventDefault());
+window.addEventListener("drop", (e) => {
+  e.preventDefault();
+  dragDepth = 0;
+  document.body.classList.remove("dragging");
+  loadFile(e.dataTransfer.files[0]);
+});
+window.addEventListener("paste", (e) => {
+  if (e.target instanceof HTMLInputElement) return;
+  const item = [...e.clipboardData.items].find((i) => i.type.startsWith("image/"));
+  if (item) loadFile(item.getAsFile());
+});
+window.addEventListener("keydown", (e) => {
+  if (e.target instanceof HTMLInputElement || !state.image) return;
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); undo(); }
+  else if (e.key === "Escape") clearPrompts();
+});
+new ResizeObserver(layout).observe($("stage"));
+
+api("api/info").then((r) => r.json()).then((info) => {
+  state.info = info;
+  $("model-info").textContent = `${info.model} · ${info.device}`;
+}).catch(() => { $("model-info").textContent = "无法连接服务"; });
+update();
+</script>
+</body>
+</html>

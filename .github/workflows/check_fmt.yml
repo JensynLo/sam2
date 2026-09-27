@@ -10,7 +10,7 @@ jobs:
       - name: Check formatting
         uses: omnilib/ufmt@action-v1
         with:
-          path: sam2 tools
+          path: sam2 tools infer.py app.py
           version: "2.0.0b2"
           python-version: "3.10"
           black-version: "24.2.0"
