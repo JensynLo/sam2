@@ -89,7 +89,9 @@ def build_sam2(
     # Read config and init model
     cfg = compose(config_name=config_file, overrides=hydra_overrides_extra)
     OmegaConf.resolve(cfg)
-    model = instantiate(cfg.model, _recursive_=True)
+    # create the parameters directly on the target device to avoid a CPU copy
+    with torch.device(device):
+        model = instantiate(cfg.model, _recursive_=True)
     _load_checkpoint(model, ckpt_path)
     model = model.to(device)
     if mode == "eval":
@@ -133,7 +135,9 @@ def build_sam2_video_predictor(
     # Read config and init model
     cfg = compose(config_name=config_file, overrides=hydra_overrides)
     OmegaConf.resolve(cfg)
-    model = instantiate(cfg.model, _recursive_=True)
+    # create the parameters directly on the target device to avoid a CPU copy
+    with torch.device(device):
+        model = instantiate(cfg.model, _recursive_=True)
     _load_checkpoint(model, ckpt_path)
     model = model.to(device)
     if mode == "eval":
@@ -163,7 +167,11 @@ def build_sam2_video_predictor_hf(model_id, **kwargs):
 
 def _load_checkpoint(model, ckpt_path):
     if ckpt_path is not None:
-        sd = torch.load(ckpt_path, map_location="cpu", weights_only=True)["model"]
+        # memory-map the checkpoint so that its tensors are read lazily from disk
+        # rather than first copied as a whole into RAM
+        sd = torch.load(ckpt_path, map_location="cpu", weights_only=True, mmap=True)[
+            "model"
+        ]
         missing_keys, unexpected_keys = model.load_state_dict(sd)
         if missing_keys:
             logging.error(missing_keys)
