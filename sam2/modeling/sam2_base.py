@@ -5,7 +5,6 @@
 # LICENSE file in the root directory of this source tree.
 
 import torch
-import torch.distributed
 import torch.nn.functional as F
 
 from torch.nn.init import trunc_normal_
@@ -200,7 +199,7 @@ class SAM2Base(torch.nn.Module):
 
     def forward(self, *args, **kwargs):
         raise NotImplementedError(
-            "Please use the corresponding methods in SAM2VideoPredictor for inference or SAM2Train for training/fine-tuning"
+            "Please use SAM2ImagePredictor or SAM2VideoPredictor for inference. "
             "See notebooks/video_predictor_example.ipynb for an inference example."
         )
 

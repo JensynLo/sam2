@@ -4,14 +4,12 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
-import logging
 from functools import partial
 from typing import List, Tuple, Union
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from iopath.common.file_io import g_pathmgr
 
 from sam2.modeling.backbones.utils import (
     PatchEmbed,
@@ -195,7 +193,6 @@ class Hiera(nn.Module):
             16,
             20,
         ),
-        weights_path=None,
         return_interm_layers=True,  # return feats from every stage
     ):
         super().__init__()
@@ -264,11 +261,6 @@ class Hiera(nn.Module):
             if return_interm_layers
             else [self.blocks[-1].dim_out]
         )
-
-        if weights_path is not None:
-            with g_pathmgr.open(weights_path, "rb") as f:
-                chkpt = torch.load(f, map_location="cpu")
-            logging.info("loading Hiera", self.load_state_dict(chkpt, strict=False))
 
     def _get_pos_embed(self, hw: Tuple[int, int]) -> torch.Tensor:
         h, w = hw

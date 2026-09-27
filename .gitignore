@@ -8,4 +8,3 @@ build/*
 _C.*
 outputs/*
 checkpoints/*.pt
-demo/backend/checkpoints/*.pt
